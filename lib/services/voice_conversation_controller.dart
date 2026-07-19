@@ -150,9 +150,10 @@ class VoiceConversationController extends ChangeNotifier {
         break;
       case ListeningEventType.error:
         // Recognition errors are common during continuous listening. Keep them
-        // silent and return to the recognizer instead of speaking an error.
+        // silent and retain the listening phase while returning to the
+        // recognizer. This prevents Focus Lock from visibly flipping between
+        // listening and paused whenever Android hits a silence timeout.
         if (_shouldListen) {
-          _setPhase(VoiceConversationPhase.paused);
           _scheduleListeningRestart();
         } else {
           _setPhase(VoiceConversationPhase.error, error: event.error);
@@ -197,7 +198,7 @@ class VoiceConversationController extends ChangeNotifier {
 
   void _scheduleListeningRestart() {
     _restartTimer?.cancel();
-    _restartTimer = Timer(const Duration(milliseconds: 450), () {
+    _restartTimer = Timer(const Duration(milliseconds: 800), () {
       unawaited(_beginListening());
     });
   }

@@ -49,8 +49,10 @@ class ListeningService {
       await _speech.listen(
         onResult: _onResult,
         listenOptions: stt.SpeechListenOptions(
-          listenFor: const Duration(seconds: 45),
-          pauseFor: const Duration(seconds: 3),
+          // Android may still end a recognizer session on silence, but longer
+          // limits avoid visibly cycling the lock screen every few seconds.
+          listenFor: const Duration(minutes: 5),
+          pauseFor: const Duration(seconds: 10),
           partialResults: true,
           cancelOnError: true,
         ),

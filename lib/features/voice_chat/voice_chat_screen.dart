@@ -31,8 +31,11 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> {
   late final FaceTrackingService _faceTracking;
   StreamSubscription<FocusState>? _focusSubscription;
   StreamSubscription<FacePosition>? _faceSubscription;
-  bool _focusLockActive = false;
+  bool _systemFocusLockActive = false;
+  bool _demoFocusLockActive = false;
   FacePosition _facePosition = const FacePosition.idle();
+
+  bool get _focusLockActive => _systemFocusLockActive || _demoFocusLockActive;
 
   @override
   void initState() {
@@ -67,11 +70,28 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> {
   }
 
   void _onFocusState(FocusState state) {
-    final changed = _focusLockActive != state.active;
+    final wasActive = _focusLockActive;
+    _systemFocusLockActive = state.active;
+    final changed = wasActive != _focusLockActive;
     if (changed) {
-      _focusLockActive = state.active;
-      unawaited(_applyFocusLock(state.active));
+      unawaited(_applyFocusLock(_focusLockActive));
     }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _startDemoLockdown() async {
+    if (_demoFocusLockActive) return;
+    final wasActive = _focusLockActive;
+    setState(() => _demoFocusLockActive = true);
+    if (!wasActive) await _applyFocusLock(true);
+  }
+
+  Future<void> _exitDemoLockdown() async {
+    if (!_demoFocusLockActive) return;
+    _demoFocusLockActive = false;
+    if (!_systemFocusLockActive) await _applyFocusLock(false);
+    // LIVE mode means no voice processing runs until the user starts it again.
+    await _controller.pause();
     if (mounted) setState(() {});
   }
 
@@ -103,6 +123,8 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> {
           transcript: _controller.liveTranscript,
           position: _facePosition,
           phase: _controller.phase,
+          showLiveExit: _demoFocusLockActive,
+          onLiveExit: _exitDemoLockdown,
         ),
       );
     }
@@ -119,6 +141,11 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Force lockdown demo',
+            onPressed: _startDemoLockdown,
+            icon: const Icon(Icons.lock_outline),
+          ),
           IconButton(
             tooltip: 'UNO Q lamp',
             onPressed: () => Navigator.of(context).push(
@@ -239,12 +266,16 @@ class _FocusLockScreen extends StatelessWidget {
     required this.transcript,
     required this.position,
     required this.phase,
+    required this.showLiveExit,
+    required this.onLiveExit,
   });
 
   final bool listening;
   final String transcript;
   final FacePosition position;
   final VoiceConversationPhase phase;
+  final bool showLiveExit;
+  final VoidCallback onLiveExit;
 
   @override
   Widget build(BuildContext context) {
@@ -262,6 +293,17 @@ class _FocusLockScreen extends StatelessWidget {
                   : 'Focus lock · waiting for “Hello”',
               style: const TextStyle(color: Color(0xff9e9e9e), fontSize: 13),
             ),
+            if (showLiveExit) ...[
+              const SizedBox(height: 24),
+              OutlinedButton.icon(
+                onPressed: onLiveExit,
+                icon: const Icon(Icons.radio_button_checked_outlined),
+                label: const Text('LIVE'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xff9ee7ff),
+                ),
+              ),
+            ],
             if (transcript.isNotEmpty) ...[
               const SizedBox(height: 10),
               Padding(
