@@ -52,4 +52,39 @@ class GenieXBridge {
 
   Future<void> stopGeneration() =>
       _methods.invokeMethod<void>('stopGeneration');
+
+  Future<NotificationTriageStatus> getNotificationTriageStatus() async {
+    final values = await _methods.invokeMapMethod<Object?, Object?>(
+      'getNotificationTriageStatus',
+    );
+    if (values == null) {
+      throw StateError('Notification triage status returned no data.');
+    }
+    return NotificationTriageStatus.fromMap(values);
+  }
+
+  Future<void> openNotificationListenerSettings() =>
+      _methods.invokeMethod<void>('openNotificationListenerSettings');
+
+  Future<String> getRecentNotificationStatus() async {
+    return await _methods.invokeMethod<String>('getRecentNotificationStatus') ??
+        'No recent notifications are available in the local temporary cache.';
+  }
+}
+
+class NotificationTriageStatus {
+  const NotificationTriageStatus({
+    required this.listenerEnabled,
+    required this.irAvailable,
+  });
+
+  final bool listenerEnabled;
+  final bool irAvailable;
+
+  factory NotificationTriageStatus.fromMap(Map<Object?, Object?> values) {
+    return NotificationTriageStatus(
+      listenerEnabled: values['listenerEnabled'] == true,
+      irAvailable: values['irAvailable'] == true,
+    );
+  }
 }

@@ -34,10 +34,13 @@ class VoiceConversationController extends ChangeNotifier {
   final BrainService _brain;
   late final StreamSubscription<ListeningEvent> _listeningSubscription;
   Timer? _restartTimer;
+  Timer? _silenceTimer;
   VoiceConversationPhase _phase = VoiceConversationPhase.starting;
   String _liveTranscript = '';
   String? _error;
   bool _shouldListen = false;
+  bool _silenced = false;
+  bool _focusLockActive = false;
   bool _disposed = false;
 
   ChatThread get thread => _brain.thread;
@@ -45,11 +48,13 @@ class VoiceConversationController extends ChangeNotifier {
   String get liveTranscript => _liveTranscript;
   String? get error => _error;
   bool get isListening => _phase == VoiceConversationPhase.listening;
+  bool get isSilenced => _silenced;
   bool get isBusy =>
       _phase == VoiceConversationPhase.thinking ||
       _phase == VoiceConversationPhase.speaking;
 
   Future<void> initialize() async {
+    await _brain.initialize();
     await _voice.initialize();
     final speechAvailable = await _listening.initialize();
     if (!speechAvailable) {
@@ -64,6 +69,8 @@ class VoiceConversationController extends ChangeNotifier {
   }
 
   Future<void> pause() async {
+    _silenceTimer?.cancel();
+    _silenced = false;
     _shouldListen = false;
     _restartTimer?.cancel();
     await _listening.stop();
@@ -71,13 +78,27 @@ class VoiceConversationController extends ChangeNotifier {
   }
 
   Future<void> resume() async {
+    _silenceTimer?.cancel();
+    _silenced = false;
     _shouldListen = true;
     await _voice.stop();
     _setPhase(VoiceConversationPhase.paused);
     await _beginListening();
   }
 
+  /// Focus lock keeps recognition alive but ignores speech until the wake word.
+  Future<void> setFocusLock(bool active) async {
+    _focusLockActive = active;
+    if (active) {
+      _shouldListen = true;
+      await _voice.stop();
+      if (!isBusy && !_silenced) await _beginListening();
+    }
+  }
+
   Future<void> interruptAndListen() async {
+    _silenceTimer?.cancel();
+    _silenced = false;
     await _voice.stop();
     _shouldListen = true;
     _setPhase(VoiceConversationPhase.paused);
@@ -91,7 +112,11 @@ class VoiceConversationController extends ChangeNotifier {
   }
 
   Future<void> _beginListening() async {
-    if (_disposed || !_shouldListen || isBusy || !_listening.isAvailable) {
+    if (_disposed ||
+        _silenced ||
+        !_shouldListen ||
+        isBusy ||
+        !_listening.isAvailable) {
       return;
     }
     _liveTranscript = '';
@@ -108,7 +133,15 @@ class VoiceConversationController extends ChangeNotifier {
         break;
       case ListeningEventType.finalResult:
         _restartTimer?.cancel();
-        unawaited(_handleUtterance(event.text));
+        if (_focusLockActive && !_hasWakePrefix(event.text)) {
+          _liveTranscript = '';
+          _scheduleListeningRestart();
+          return;
+        }
+        final utterance = _focusLockActive
+            ? _removeWakePrefix(event.text)
+            : event.text.trim();
+        unawaited(_handleUtterance(utterance));
         break;
       case ListeningEventType.idle:
         if (_shouldListen && !isBusy) {
@@ -116,7 +149,14 @@ class VoiceConversationController extends ChangeNotifier {
         }
         break;
       case ListeningEventType.error:
-        _setPhase(VoiceConversationPhase.error, error: event.error);
+        // Recognition errors are common during continuous listening. Keep them
+        // silent and return to the recognizer instead of speaking an error.
+        if (_shouldListen) {
+          _setPhase(VoiceConversationPhase.paused);
+          _scheduleListeningRestart();
+        } else {
+          _setPhase(VoiceConversationPhase.error, error: event.error);
+        }
         break;
       case ListeningEventType.ready:
       case ListeningEventType.listening:
@@ -126,6 +166,10 @@ class VoiceConversationController extends ChangeNotifier {
 
   Future<void> _handleUtterance(String utterance) async {
     if (_disposed || isBusy) return;
+    if (_isShutUpCommand(utterance)) {
+      await silenceForAtLeast30Seconds();
+      return;
+    }
     _liveTranscript = utterance;
     _setPhase(VoiceConversationPhase.thinking);
     await _listening.stop();
@@ -158,6 +202,44 @@ class VoiceConversationController extends ChangeNotifier {
     });
   }
 
+  /// Local safety command. It never reaches the LLM or produces a spoken reply.
+  Future<void> silenceForAtLeast30Seconds() async {
+    _silenceTimer?.cancel();
+    _silenced = true;
+    _shouldListen = false;
+    _restartTimer?.cancel();
+    await _voice.stop();
+    await _listening.stop();
+    _liveTranscript = '';
+    _setPhase(VoiceConversationPhase.paused);
+    _silenceTimer = Timer(const Duration(seconds: 30), () {
+      if (_disposed) return;
+      _silenced = false;
+      _shouldListen = true;
+      unawaited(_beginListening());
+    });
+  }
+
+  /// In lockdown, every actionable utterance must start with the exact word
+  /// "Hello". A later occurrence (for example, "can you say hello") is ignored.
+  bool _hasWakePrefix(String text) =>
+      RegExp(r'^\s*hello\b', caseSensitive: false).hasMatch(text);
+
+  String _removeWakePrefix(String text) {
+    final command = text
+        .replaceFirst(
+          RegExp(r'^\s*hello\b[\s,.:;!?-]*', caseSensitive: false),
+          '',
+        )
+        .trim();
+    return command.isEmpty ? 'Hello' : command;
+  }
+
+  bool _isShutUpCommand(String text) => RegExp(
+    r'\b(shut\s*up|be\s*quiet|stop\s*listening)\b',
+    caseSensitive: false,
+  ).hasMatch(text);
+
   void _onThreadChanged() {
     if (!_disposed) notifyListeners();
   }
@@ -172,6 +254,7 @@ class VoiceConversationController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _restartTimer?.cancel();
+    _silenceTimer?.cancel();
     _brain.thread.removeListener(_onThreadChanged);
     unawaited(_listeningSubscription.cancel());
     unawaited(_listening.dispose());

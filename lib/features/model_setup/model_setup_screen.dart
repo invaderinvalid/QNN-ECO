@@ -7,6 +7,7 @@ import '../../core/models/model_spec.dart';
 import '../../core/services/ai_hub_asset_download_service.dart';
 import '../../core/services/ai_hub_credentials_service.dart';
 import '../../core/services/geniex_bridge.dart';
+import '../notification_triage/notification_triage_screen.dart';
 import 'widgets/ai_hub_credentials_dialog.dart';
 
 class ModelSetupScreen extends StatefulWidget {
@@ -228,6 +229,15 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
       appBar: AppBar(
         title: const Text('Model setup'),
         actions: [
+          IconButton(
+            tooltip: 'Notification triage',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => NotificationTriageScreen(bridge: widget.bridge),
+              ),
+            ),
+            icon: const Icon(Icons.notifications_active_outlined),
+          ),
           IconButton(
             tooltip: _aiHubConnected
                 ? 'AI Hub API key saved'

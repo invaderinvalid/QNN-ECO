@@ -1,5 +1,7 @@
 package com.example.qnn_eco
 
+import android.content.Intent
+import android.provider.Settings
 import com.geniex.sdk.ModelManagerWrapper
 import com.geniex.sdk.bean.ChatMessage
 import com.geniex.sdk.bean.HubSource
@@ -18,22 +20,22 @@ import kotlinx.coroutines.launch
 
 class MainActivity : FlutterActivity() {
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val runtime = GenieXRuntime()
-    private lateinit var capabilityProbe: GenieXDeviceCapabilityProbe
-    private lateinit var chatService: GenieXChatService
+    private val app: QnnEcoApplication get() = application as QnnEcoApplication
+    private val runtime: GenieXRuntime get() = app.runtime
+    private val capabilityProbe: GenieXDeviceCapabilityProbe get() = app.capabilityProbe
+    private val inferenceCoordinator: GenieXInferenceCoordinator get() = app.inferenceCoordinator
     private var progressSink: EventChannel.EventSink? = null
     private var chatSink: EventChannel.EventSink? = null
+    private var focusStateMonitor: FocusStateMonitor? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        capabilityProbe = GenieXDeviceCapabilityProbe(applicationContext)
-        chatService = GenieXChatService(GenieXModelLoader(runtime, capabilityProbe))
-        runtime.initialize(applicationContext)
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result -> handleMethod(call, result) }
         configureProgressChannel(flutterEngine)
         configureChatChannel(flutterEngine)
+        configureFocusStateChannel(flutterEngine)
     }
 
     private fun configureProgressChannel(flutterEngine: FlutterEngine) {
@@ -62,6 +64,23 @@ class MainActivity : FlutterActivity() {
             })
     }
 
+    private fun configureFocusStateChannel(flutterEngine: FlutterEngine) {
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, FOCUS_STATE_CHANNEL)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    focusStateMonitor?.stop()
+                    focusStateMonitor = FocusStateMonitor(applicationContext) { state ->
+                        runOnUiThread { events?.success(state.asMap()) }
+                    }.also { it.start() }
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    focusStateMonitor?.stop()
+                    focusStateMonitor = null
+                }
+            })
+    }
+
     private fun handleMethod(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "getDeviceCapabilities" -> getDeviceCapabilities(result)
@@ -70,6 +89,9 @@ class MainActivity : FlutterActivity() {
             "downloadModel" -> downloadModel(call, result)
             "generateReply" -> generateReply(call, result)
             "stopGeneration" -> stopGeneration(result)
+            "getNotificationTriageStatus" -> getNotificationTriageStatus(result)
+            "getRecentNotificationStatus" -> getRecentNotificationStatus(result)
+            "openNotificationListenerSettings" -> openNotificationListenerSettings(result)
             else -> result.notImplemented()
         }
     }
@@ -204,7 +226,7 @@ class MainActivity : FlutterActivity() {
         ioScope.launch {
             var methodResultSent = false
             try {
-                chatService.generate(
+                inferenceCoordinator.generate(
                     modelName = modelName,
                     messages = messages,
                     onReady = {
@@ -223,11 +245,40 @@ class MainActivity : FlutterActivity() {
     private fun stopGeneration(result: MethodChannel.Result) {
         ioScope.launch {
             try {
-                chatService.stop()
+                inferenceCoordinator.stop()
                 respond { result.success(null) }
             } catch (error: Throwable) {
                 respond { result.error("STOP_FAILED", error.message, null) }
             }
+        }
+    }
+
+    private fun getNotificationTriageStatus(result: MethodChannel.Result) {
+        result.success(
+            mapOf(
+                "listenerEnabled" to NotificationTriageAccess.isListenerEnabled(applicationContext),
+                "irAvailable" to IrBlaster(applicationContext).isAvailable,
+            ),
+        )
+    }
+
+    private fun getRecentNotificationStatus(result: MethodChannel.Result) {
+        ioScope.launch {
+            try {
+                val summary = NotificationTemporaryStore(applicationContext).summaryForTool()
+                respond { result.success(summary) }
+            } catch (error: Throwable) {
+                respond { result.error("NOTIFICATION_STATUS_FAILED", error.message, null) }
+            }
+        }
+    }
+
+    private fun openNotificationListenerSettings(result: MethodChannel.Result) {
+        try {
+            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+            result.success(null)
+        } catch (error: Throwable) {
+            result.error("NOTIFICATION_SETTINGS_FAILED", error.message, null)
         }
     }
 
@@ -265,7 +316,7 @@ class MainActivity : FlutterActivity() {
     private fun respond(action: () -> Unit) = runOnUiThread(action)
 
     override fun onDestroy() {
-        chatService.close()
+        focusStateMonitor?.stop()
         ioScope.cancel()
         super.onDestroy()
     }
@@ -274,5 +325,6 @@ class MainActivity : FlutterActivity() {
         const val CHANNEL = "com.example.qnn_eco/geniex"
         const val PROGRESS_CHANNEL = "com.example.qnn_eco/geniex_progress"
         const val CHAT_CHANNEL = "com.example.qnn_eco/geniex_chat"
+        const val FOCUS_STATE_CHANNEL = "com.example.qnn_eco/focus_state"
     }
 }

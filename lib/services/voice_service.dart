@@ -9,7 +9,7 @@ class VoiceService {
   Future<void> initialize() async {
     await _tts.awaitSpeakCompletion(true);
     await _tts.setLanguage('en-US');
-    await _tts.setSpeechRate(0.48);
+    await _tts.setSpeechRate(0.38);
     await _tts.setPitch(1.0);
     _tts.setStartHandler(() => isSpeaking.value = true);
     _tts.setCompletionHandler(() => isSpeaking.value = false);

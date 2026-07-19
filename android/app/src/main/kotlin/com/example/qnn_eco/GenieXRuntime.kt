@@ -2,6 +2,7 @@ package com.example.qnn_eco
 
 import android.content.Context
 import com.geniex.sdk.GenieXSdk
+import kotlinx.coroutines.delay
 
 /**
  * Makes SDK/plugin initialization an explicit prerequisite. GenieX otherwise
@@ -38,5 +39,17 @@ class GenieXRuntime {
         check(initialized) {
             "GenieX runtime initialization did not complete. Restart the app and try again."
         }
+    }
+
+    suspend fun awaitReady(timeoutMillis: Long = 10_000) {
+        val attempts = (timeoutMillis / 100).toInt().coerceAtLeast(1)
+        repeat(attempts) {
+            initializationError?.let { error ->
+                throw IllegalStateException("GenieX runtime initialization failed: $error")
+            }
+            if (initialized) return
+            delay(100)
+        }
+        requireReady()
     }
 }

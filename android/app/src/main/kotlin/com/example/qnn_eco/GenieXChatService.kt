@@ -10,6 +10,7 @@ class GenieXChatService(private val modelLoader: GenieXModelLoader) {
     suspend fun generate(
         modelName: String,
         messages: List<ChatMessage>,
+        maxTokens: Int = 512,
         onReady: () -> Unit,
         emit: (type: String, text: String?) -> Unit,
     ) {
@@ -20,7 +21,7 @@ class GenieXChatService(private val modelLoader: GenieXModelLoader) {
         onReady()
         model.generateStreamFlow(
             template.formattedText,
-            GenerationConfig(maxTokens = 512),
+            GenerationConfig(maxTokens = maxTokens),
         ).collect { streamResult ->
             when (streamResult) {
                 is LlmStreamResult.Token -> emit("token", streamResult.text)

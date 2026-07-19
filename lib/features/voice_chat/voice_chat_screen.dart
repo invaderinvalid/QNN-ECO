@@ -1,9 +1,17 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/models/model_spec.dart';
 import '../../core/services/geniex_bridge.dart';
 import '../model_setup/model_setup_screen.dart';
+import '../notification_triage/notification_triage_screen.dart';
+import '../uno_q_lamp/uno_q_lamp_screen.dart';
 import '../../services/voice_conversation_controller.dart';
+import '../../services/focus_state_service.dart';
+import '../../services/face_tracking_service.dart';
+import '../../widgets/agent_face.dart';
 import '../../widgets/chat_bubble.dart';
 
 class VoiceChatScreen extends StatefulWidget {
@@ -19,6 +27,12 @@ class VoiceChatScreen extends StatefulWidget {
 class _VoiceChatScreenState extends State<VoiceChatScreen> {
   late final VoiceConversationController _controller;
   final _textInput = TextEditingController();
+  final _focusState = FocusStateService();
+  late final FaceTrackingService _faceTracking;
+  StreamSubscription<FocusState>? _focusSubscription;
+  StreamSubscription<FacePosition>? _faceSubscription;
+  bool _focusLockActive = false;
+  FacePosition _facePosition = const FacePosition.idle();
 
   @override
   void initState() {
@@ -28,6 +42,11 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> {
       model: widget.model,
     )..addListener(_refresh);
     _controller.initialize();
+    _faceTracking = FaceTrackingService();
+    _faceSubscription = _faceTracking.positions.listen((position) {
+      if (mounted) setState(() => _facePosition = position);
+    });
+    _focusSubscription = _focusState.states.listen(_onFocusState);
   }
 
   @override
@@ -36,11 +55,35 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> {
       ..removeListener(_refresh)
       ..dispose();
     _textInput.dispose();
+    _focusSubscription?.cancel();
+    _faceSubscription?.cancel();
+    unawaited(_faceTracking.dispose());
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
   }
 
   void _refresh() {
     if (mounted) setState(() {});
+  }
+
+  void _onFocusState(FocusState state) {
+    final changed = _focusLockActive != state.active;
+    if (changed) {
+      _focusLockActive = state.active;
+      unawaited(_applyFocusLock(state.active));
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _applyFocusLock(bool active) async {
+    if (active) {
+      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+      await _faceTracking.start();
+    } else {
+      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      _faceTracking.stop();
+    }
+    await _controller.setFocusLock(active);
   }
 
   Future<void> _submitTypedText() async {
@@ -52,6 +95,17 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_focusLockActive) {
+      return PopScope(
+        canPop: false,
+        child: _FocusLockScreen(
+          listening: _controller.isListening,
+          transcript: _controller.liveTranscript,
+          position: _facePosition,
+          phase: _controller.phase,
+        ),
+      );
+    }
     final phase = _controller.phase;
     final listening = phase == VoiceConversationPhase.listening;
     final colors = Theme.of(context).colorScheme;
@@ -65,6 +119,22 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'UNO Q lamp',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const UnoQLampScreen()),
+            ),
+            icon: const Icon(Icons.lightbulb_outline),
+          ),
+          IconButton(
+            tooltip: 'Notification triage',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => NotificationTriageScreen(bridge: widget.bridge),
+              ),
+            ),
+            icon: const Icon(Icons.notifications_active_outlined),
+          ),
           IconButton(
             tooltip: 'Model setup',
             onPressed: () => Navigator.of(context).push(
@@ -156,6 +226,58 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> {
                 ],
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FocusLockScreen extends StatelessWidget {
+  const _FocusLockScreen({
+    required this.listening,
+    required this.transcript,
+    required this.position,
+    required this.phase,
+  });
+
+  final bool listening;
+  final String transcript;
+  final FacePosition position;
+  final VoiceConversationPhase phase;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AgentFace(position: position, phase: phase),
+            const SizedBox(height: 30),
+            Text(
+              listening
+                  ? 'Focus lock · say “Hello” first'
+                  : 'Focus lock · waiting for “Hello”',
+              style: const TextStyle(color: Color(0xff9e9e9e), fontSize: 13),
+            ),
+            if (transcript.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: Text(
+                  transcript,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Color(0xff6f6f6f),
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),
