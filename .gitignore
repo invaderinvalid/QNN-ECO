@@ -33,6 +33,7 @@ migrate_working_dir/
 /build/
 /coverage/
 work/
+.cora/
 
 # Symbolication related
 app.*.symbols

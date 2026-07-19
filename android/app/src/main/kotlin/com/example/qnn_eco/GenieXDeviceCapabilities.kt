@@ -10,6 +10,7 @@ data class DeviceCapabilities(
     val chipset: String?,
     val supportsNpu: Boolean,
     val totalMemoryBytes: Long,
+    val availableMemoryBytes: Long,
 ) {
     val supportsAiHub: Boolean get() = supportsNpu
     val recommendedComputeUnit: String get() = if (supportsNpu) "npu" else "cpu"
@@ -21,6 +22,7 @@ data class DeviceCapabilities(
         "supportsAiHub" to supportsAiHub,
         "recommendedComputeUnit" to recommendedComputeUnit,
         "totalMemoryBytes" to totalMemoryBytes,
+        "availableMemoryBytes" to availableMemoryBytes,
     )
 }
 
@@ -32,7 +34,13 @@ class GenieXDeviceCapabilityProbe(private val context: Context) {
     private var cached: DeviceCapabilities? = null
 
     suspend fun get(): DeviceCapabilities {
-        cached?.let { return it }
+        cached?.let { capabilities ->
+            val memory = readMemoryInfo()
+            return capabilities.copy(
+                totalMemoryBytes = memory.totalMem,
+                availableMemoryBytes = memory.availMem,
+            )
+        }
 
         val isArm64 = Build.SUPPORTED_ABIS.any { it.equals("arm64-v8a", ignoreCase = true) }
         val sdkChipset = runCatching { ModelManagerWrapper.detectChipset() }.getOrNull()
@@ -44,15 +52,20 @@ class GenieXDeviceCapabilityProbe(private val context: Context) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SOC_MODEL else null,
             ),
         )
-        val memoryInfo = ActivityManager.MemoryInfo()
-        val activityManager = context.getSystemService(ActivityManager::class.java)
-        activityManager?.getMemoryInfo(memoryInfo)
+        val memoryInfo = readMemoryInfo()
         return DeviceCapabilities(
             isArm64 = isArm64,
             chipset = chipset,
             supportsNpu = isArm64 && chipset in supportedNpuChipsets,
             totalMemoryBytes = memoryInfo.totalMem,
+            availableMemoryBytes = memoryInfo.availMem,
         ).also { cached = it }
+    }
+
+    private fun readMemoryInfo(): ActivityManager.MemoryInfo {
+        return ActivityManager.MemoryInfo().also { memoryInfo ->
+            context.getSystemService(ActivityManager::class.java)?.getMemoryInfo(memoryInfo)
+        }
     }
 
     private fun detectSupportedChipset(hints: List<String>): String? {
